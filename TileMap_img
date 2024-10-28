@@ -1,0 +1,82 @@
+#include <SFML/Graphics.hpp>
+#include <tuple>
+#include <stdexcept>
+#include <vector>
+#pragma once
+constexpr int TILESIZE_X = 64;
+constexpr int TILESIZE_Y = 64;
+
+struct Tile_Image
+{
+	std::vector<std::tuple<sf::Image, std::pair<int, int>>> tile_m;
+
+	bool imgResize(sf::Image &img, int tileSizeX, int tileSizeY);
+
+	bool addImage(const sf::String &way, int tileSizeX = TILESIZE_X, int tileSizeY = TILESIZE_Y)
+	{
+		bool comp = true;
+		sf::Image img;
+		if (!img.loadFromFile(way))
+		{
+			comp = false;
+			throw std::logic_error("Incorrect path: " + way.toAnsiString());
+		}
+		if (tileSizeX != TILESIZE_X || tileSizeY != TILESIZE_Y)
+		{
+			comp = imgResize(img, tileSizeX, tileSizeY);
+		}
+		tile_m.emplace_back(img, std::make_pair(static_cast<int>(img.getSize().x / tileSizeX),
+												static_cast<int>(img.getSize().y / tileSizeY)));
+		return comp;
+	}
+
+	const sf::Image &getImg(size_t index) const
+	{
+		if (index >= tile_m.size())
+		{
+			throw std::out_of_range("Index out of range");
+		}
+		return std::get<0>(tile_m[index]);
+	}
+
+	int getTileMaxX(size_t index) const
+	{
+		if (index >= tile_m.size())
+		{
+			throw std::out_of_range("Index out of range");
+		}
+		return std::get<1>(tile_m[index]).first;
+	}
+
+	int getTileMaxY(size_t index) const
+	{
+		if (index >= tile_m.size())
+		{
+			throw std::out_of_range("Index out of range");
+		}
+		return std::get<1>(tile_m[index]).second;
+	}
+};
+
+bool Tile_Image::imgResize(sf::Image &originalImage, int tileSizeX, int tileSizeY)
+{
+	bool comp = true;
+	unsigned int newWidth = (originalImage.getSize().x / tileSizeX) * TILESIZE_X;
+	unsigned int newHeight = (originalImage.getSize().y / tileSizeY) * TILESIZE_Y;
+
+	sf::Image resizedImage;
+	resizedImage.create(newWidth, newHeight);
+
+	for (unsigned int y = 0; y < newHeight; ++y)
+	{
+		for (unsigned int x = 0; x < newWidth; ++x)
+		{
+			float srcX = static_cast<float>(x) / newWidth * originalImage.getSize().x;
+			float srcY = static_cast<float>(y) / newHeight * originalImage.getSize().y;
+			sf::Color color = originalImage.getPixel(static_cast<unsigned int>(srcX), static_cast<unsigned int>(srcY));
+			resizedImage.setPixel(x, y, color);
+		}
+	}
+	originalImage = resizedImage;
+	return comp;
+}
