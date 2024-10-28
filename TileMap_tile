@@ -1,0 +1,42 @@
+#include <unordered_set>
+#include <utility>
+#pragma once
+struct Tile
+{
+	int index, x, y;
+	Tile(int I, int X,int Y):index(I),x(X),y(Y)
+	{}
+};
+
+struct tile_hash{
+    std::size_t operator()(const Tile& t) const {
+    	auto h1 = std::hash<int>()(t.index);
+    	auto h2 = std::hash<int>()(t.x);
+    	auto h3 = std::hash<int>()(t.y);
+    	return h1^(h2<<1)^(h3<<2);
+    }
+};
+
+struct tile_equal{
+	bool operator()(const Tile& t,const Tile& t1) const {
+		return t.index==t1.index && t.x==t1.x && t.y==t1.y;
+	}
+};
+
+// Хеш-функция для std::pair<int,int>
+struct pair_hash {
+    template <class T1, class T2>
+    std::size_t operator()(const std::pair<T1, T2> &pair) const {
+        auto hash1 = std::hash<T1>{}(pair.first);
+        auto hash2 = std::hash<T2>{}(pair.second);
+        return hash1 ^ (hash2 << 1);
+    }
+};
+
+// Функция сравнения для std::pair<int, int>
+struct pair_equal {
+    template <class T1, class T2>
+    bool operator()(const std::pair<T1, T2> &lhs, const std::pair<T1, T2> &rhs) const {
+        return lhs.first == rhs.first && lhs.second == rhs.second;
+    }
+};
