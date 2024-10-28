@@ -1,0 +1,435 @@
+#include <SFML/Graphics.hpp>
+#include "tileMap_imgStruct.hpp"
+#include "Tile.hpp"
+#include <queue>
+#include <fstream>
+#include <ctime>
+#include <cstdlib>
+#include <string>
+
+using Map_Vector = std::vector<std::vector<std::vector<Tile>>>;
+
+class TileMap
+{
+  public:
+	std::string error;
+	TileMap() : error("") {}
+	std::string Echo() { return error; }
+	void addEcho(std::string s)
+	{
+		error += s;
+		error += "\n";
+	}
+
+	void addNewImage(std::string &way, int tileWidth, int tileHeight);
+	sf::IntRect getTileRect(int image_Id, int imgX, int imgY);
+	void generateMap(int width, int height);
+	Map_Vector &getMap() { return map; }
+
+  private:
+	Tile_Image images;
+	int WIDTH, HEIGHT;
+	std::vector<std::pair<int, int>> neighboursSide{{-1, 0}, {0, -1}, {1, 0}, {0, 1}};
+	//x,y,список
+	Map_Vector map;
+	//id картинки, х, у , список
+	std::vector<std::vector<std::vector<std::unordered_set<Tile, tile_hash, tile_equal>>>> leftNeighbours;
+	std::vector<std::vector<std::vector<std::unordered_set<Tile, tile_hash, tile_equal>>>> rightNeighbours;
+
+	std::vector<std::vector<std::vector<std::unordered_set<Tile, tile_hash, tile_equal>>>> topNeighbours;
+
+	std::vector<std::vector<std::vector<std::unordered_set<Tile, tile_hash, tile_equal>>>> bottomNeighbours;
+
+	//======ФУНКЦИИ
+	bool isInMap(int x, int y);
+	sf::Color getPixel(const sf::Image &img, int x, int y);
+	bool isColorSimilar(const sf::Color &color1, const sf::Color &color2);
+	void update_All_Neighbors();
+	const std::unordered_set<Tile, tile_hash, tile_equal> &getCurrentNeighbour(int original_imgIndex, int original_imgX, int original_imgY, int original_posX, int original_positionY, int neighbour_posX, int neighbour_posY);
+	void updateNeighboursList(int x, int y);
+
+	struct ComparePairs
+	{
+		Map_Vector &mapRef;
+		ComparePairs(Map_Vector &m) : mapRef(m) {}
+
+		bool operator()(const std::pair<int, int> &a, const std::pair<int, int> &b)
+		{
+			// Сравниваем по количеству элементов в соответствующих векторах
+			return mapRef[a.first][a.second].size() > mapRef[b.first][b.second].size();
+		}
+	};
+
+	void updateQueue(std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>, ComparePairs> &q)
+	{
+		std::vector<std::pair<int, int>> temp;
+		while (!q.empty())
+		{
+			temp.emplace_back(q.top());
+			q.pop();
+		}
+		for (auto elem : temp)
+		{
+			q.emplace(elem);
+		}
+	}
+};
+//≠========≠========≠======≠=====
+//добавление новой картинки с тайлами
+void TileMap::addNewImage(std::string &way, int tileWidth, int tileHeight)
+{
+	if (images.addImage(way, 64, 64))
+	{
+		addEcho("добавлена картинка:" + way);
+	}
+	update_All_Neighbors();
+	addEcho("список соседей обновлен");
+}
+//получить область определенного тайлк
+sf::IntRect TileMap::getTileRect(int imageId, int x, int y)
+{
+	if (imageId >= 0 && imageId < images.tile_m.size() && x >= 0 && y >= 0 && x < images.getTileMaxX(imageId) && y < images.getTileMaxY(imageId))
+	{
+		return sf::IntRect(x * TILESIZE_X, y * TILESIZE_Y, TILESIZE_X, TILESIZE_Y);
+	}
+	return sf::IntRect(); // Возврат пустого прямоугольника
+}
+
+bool TileMap::isInMap(int x, int y)
+{
+	return x >= 0 && y >= 0 && x < WIDTH && y < HEIGHT;
+}
+
+sf::Color TileMap::getPixel(const sf::Image &img, int x, int y)
+{
+	if (x < 0 || y < 0 || x >= img.getSize().x || y >= img.getSize().y)
+		return sf::Color::Transparent;
+	return img.getPixel(x, y);
+}
+
+bool TileMap::isColorSimilar(const sf::Color &color1, const sf::Color &color2)
+{
+	int c_err = 5, a_err = 10;
+	return (std::abs(color1.r - color2.r) <= c_err) &&
+		   (std::abs(color1.g - color2.g) <= c_err) &&
+		   (std::abs(color1.b - color2.b) <= c_err) &&
+		   (std::abs(color1.a - color2.a) <= a_err);
+}
+
+void TileMap::update_All_Neighbors()
+{
+	//% похожих пикселей
+	float similarPercent = 0.99f;
+	//clear и ресайз для всех списков соседей
+	leftNeighbours.resize(images.tile_m.size());
+	rightNeighbours.resize(images.tile_m.size());
+	topNeighbours.resize(images.tile_m.size());
+	bottomNeighbours.resize(images.tile_m.size());
+
+	for (int i = 0; i < images.tile_m.size(); i++)
+	{
+		addEcho("resize " + std::to_string(images.tile_m.size()));
+		leftNeighbours[i].resize(images.getTileMaxX(i), std::vector<std::unordered_set<Tile, tile_hash, tile_equal>>(images.getTileMaxY(i)));
+
+		rightNeighbours[i].resize(images.getTileMaxX(i), std::vector<std::unordered_set<Tile, tile_hash, tile_equal>>(images.getTileMaxY(i)));
+
+		topNeighbours[i].resize(images.getTileMaxX(i), std::vector<std::unordered_set<Tile, tile_hash, tile_equal>>(images.getTileMaxY(i)));
+
+		bottomNeighbours[i].resize(images.getTileMaxX(i), std::vector<std::unordered_set<Tile, tile_hash, tile_equal>>(images.getTileMaxY(i)));
+	}
+	//цикл по изображениям к которым ищу пару
+	for (int i = 0; i < images.tile_m.size(); i++)
+	{
+		for (int x1 = 0; x1 < images.getTileMaxX(i); x1++)
+		{
+			for (int y1 = 0; y1 < images.getTileMaxY(i); y1++)
+			{
+				//цикл по изобр. среди которых ищу пару
+				for (int j = 0; j < images.tile_m.size(); j++)
+				{
+					for (int x2 = 0; x2 < images.getTileMaxX(j); x2++)
+					{
+						for (int y2 = 0; y2 < images.getTileMaxY(j); y2++)
+						{
+							//сосед справа
+							bool isMatching = true;
+							int similarPixels = 0;
+							for (int pixel = 0; pixel < TILESIZE_Y; pixel++)
+							{
+								if (isColorSimilar(getPixel(images.getImg(i), (TILESIZE_X - 1) + (x1 * TILESIZE_X), pixel + (y1 * TILESIZE_Y)), getPixel(images.getImg(j), (x2 * TILESIZE_X), pixel + (y2 * TILESIZE_Y))))
+								{
+									similarPixels++;
+								}
+							}
+							if (similarPixels <= TILESIZE_Y * similarPercent)
+							{
+								isMatching = false;
+							}
+							if (isMatching)
+							{
+								//этот список может соседствовать с проверяемым справа;
+								//x1,y1 известный тайл, к нему список возможных тайлов справа x2,y2;
+								rightNeighbours[i][x1][y1].emplace(Tile(j, x2, y2));
+							}
+							//сосед слева
+							isMatching = true;
+							similarPixels = 0;
+							for (int pixel = 0; pixel < TILESIZE_Y; pixel++)
+							{
+								if (isColorSimilar(getPixel(images.getImg(i), (x1 * TILESIZE_X), pixel + (y1 * TILESIZE_Y)), getPixel(images.getImg(j), (TILESIZE_X - 1) + (x2 * TILESIZE_X), pixel + (y2 * TILESIZE_Y))))
+								{
+									similarPixels++;
+								}
+							}
+							if (similarPixels <= TILESIZE_Y * similarPercent)
+							{
+								isMatching = false;
+							}
+							if (isMatching)
+							{
+								//этот список может соседствовать с проверяемым слева;
+								//x1,y1 известный тайл, к нему список возможных тайлов слева x2,y2
+								leftNeighbours[i][x1][y1].emplace(Tile(j, x2, y2));
+							}
+							//сосед сверху
+							isMatching = true;
+							similarPixels = 0;
+							for (int pixel = 0; pixel < TILESIZE_X; pixel++)
+							{
+								if (!isColorSimilar(getPixel(images.getImg(i), pixel + (x1 * TILESIZE_X), (y1 * TILESIZE_Y)), getPixel(images.getImg(j), pixel + (x2 * TILESIZE_X), (TILESIZE_Y - 1) + (y2 * TILESIZE_Y))))
+								{
+									similarPixels++;
+								}
+							}
+							if (similarPixels <= TILESIZE_X * similarPercent)
+							{
+								isMatching = false;
+							}
+							if (isMatching)
+							{
+								//этот список может соседствовать с проверяемым сверху;
+								//x1,y1 известный тайл, к нему список возможных тайлов сверху x2,y2;
+								topNeighbours[i][x1][y1].emplace(Tile(j, x2, y2));
+							}
+							//сосед сверху
+							isMatching = true;
+							similarPixels = 0;
+							for (int pixel = 0; pixel < TILESIZE_X; pixel++)
+							{
+								if (!isColorSimilar(getPixel(images.getImg(i), pixel + (x1 * TILESIZE_X), (TILESIZE_Y - 1) + (y1 * TILESIZE_Y)), getPixel(images.getImg(j), pixel + (x2 * TILESIZE_X), (y2 * TILESIZE_Y))))
+								{
+									similarPixels++;
+								}
+							}
+							if (similarPixels <= TILESIZE_X * similarPercent)
+							{
+								isMatching = false;
+							}
+							if (isMatching)
+							{
+								//этот список может соседствовать с проверяемым сверху;
+								//x1,y1 известный тайл, к нему список возможных тайлов сверху x2,y2;
+								bottomNeighbours[i][x1][y1].emplace(Tile(j, x2, y2));
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+using neighbourList = std::unordered_set<Tile, tile_hash, tile_equal>;
+
+const neighbourList &TileMap::getCurrentNeighbour(int original_imgIndex, int original_imgX, int original_imgY,
+																					int original_posX, int original_posY,
+																					int neighbour_posX, int neighbour_posY)
+{
+	if (original_posX < neighbour_posX)
+	{
+		addEcho("получен список левых соседей " + std::to_string(original_imgIndex) + "/" + std::to_string(original_imgX) + "/" + std::to_string(original_imgY));
+		return leftNeighbours[original_imgIndex][original_imgX][original_imgY];
+	}
+	else if (original_posX > neighbour_posX)
+	{
+		addEcho("получен список правых соседей " + std::to_string(original_imgIndex) + "/" + std::to_string(original_imgX) + "/" + std::to_string(original_imgY));
+		return rightNeighbours[original_imgIndex][original_imgX][original_imgY];
+	}
+	else if (original_posY > neighbour_posY)
+	{
+		addEcho("получен список нижних соседей " + std::to_string(original_imgIndex) + "/" + std::to_string(original_imgX) + "/" + std::to_string(original_imgY));
+		return bottomNeighbours[original_imgIndex][original_imgX][original_imgY];
+	}
+	else if (original_posY < neighbour_posY)
+	{
+		addEcho("получен список верхних соседей " + std::to_string(original_imgIndex) + "/" + std::to_string(original_imgX) + "/" + std::to_string(original_imgY));
+		return topNeighbours[original_imgIndex][original_imgX][original_imgY];
+	}
+	throw std::runtime_error("Invalid neighbor position");
+}
+
+void TileMap::updateNeighboursList(int x, int y)
+{
+	addEcho("обновление соседей для:" + std::to_string(x) + "/" + std::to_string(y));
+	
+	for (const auto &neighbour : neighboursSide)
+	{
+		neighbourList currNeighbour;
+		int newX = x + neighbour.first;
+		int newY = y + neighbour.second;
+		addEcho("проверяется сосед:" + std::to_string(newX) + "/" + std::to_string(newY));
+		if (isInMap(newX, newY))
+		{
+			for (const auto &checkNeighbour : neighboursSide)
+			{
+				int checkX = newX + checkNeighbour.first;
+				int checkY = newY + checkNeighbour.second;
+				addEcho("сосед проверяемого:" + std::to_string(checkX) + "/" + std::to_string(checkY));
+				if (!isInMap(checkX, checkY))
+				{
+					currNeighbour = getCurrentNeighbour(0, 0, 0, newX, newY, checkX, checkY);
+					addEcho("за пределами карты");
+				}
+				else if (map[checkX][checkY].size() > 1)
+				{
+					addEcho("не определен");
+					continue;
+				}
+				else
+				{
+					currNeighbour = getCurrentNeighbour(map[checkX][checkY][0].index, map[checkX][checkY][0].x,
+														map[checkX][checkY][0].y,
+														newX, newY,
+														checkX, checkY);
+					addEcho("список получен для X=" + std::to_string(map[checkX][checkY][0].x) + "/ Y=" + std::to_string(map[checkX][checkY][0].y) + ":");
+				}
+				if (currNeighbour.size() == 0)
+				{
+					addEcho("size=0");
+				}
+				for (auto curr : currNeighbour)
+				{
+					addEcho(std::to_string(curr.x) + "/" + std::to_string(curr.y));
+				}
+				addEcho("========");
+				for (auto it = map[newX][newY].begin(); it != map[newX][newY].end();)
+				{
+					if (currNeighbour.find(*it) == currNeighbour.end())
+					{
+						addEcho("из " + std::to_string(newX) + "/" + std::to_string(newY) + " удален " + std::to_string(it->x) + "/" + std::to_string(it->y));
+						it = map[newX][newY].erase(it);
+					}
+					else
+					{
+						++it;
+					}
+				}
+				//очистить значение currNeighbour
+			}
+		}
+	}
+}
+
+void TileMap::generateMap(int W, int H)
+{
+	WIDTH = W;
+	HEIGHT = H;
+	map.clear();
+	map.resize(WIDTH, std::vector<std::vector<Tile>>(HEIGHT));
+
+	// Заполнение всеми возможными тайлами
+	for (int x = 0; x < WIDTH; x++)
+	{
+		for (int y = 0; y < HEIGHT; y++)
+		{
+			std::vector<Tile> v1;
+			for (int i = 0; i < images.tile_m.size(); i++)
+			{
+				for (int x1 = 0; x1 < images.getTileMaxX(i); x1++)
+				{
+					for (int y1 = 0; y1 < images.getTileMaxY(i); y1++)
+					{
+						v1.emplace_back(Tile(i, x1, y1));
+					}
+				}
+			}
+			map[x][y] = v1;
+		}
+	}
+	auto comp = ComparePairs(map);
+	std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>, ComparePairs> queue(comp);
+	std::unordered_set<std::pair<int, int>, pair_hash, pair_equal> processedCell;
+	int w = rand() % WIDTH;
+	int h = rand() % HEIGHT;
+	queue.emplace(std::make_pair(w, h));
+	processedCell.emplace(std::make_pair(w, h));
+	while (!queue.empty())
+	{
+		updateQueue(queue);
+		auto topCoords = queue.top();
+		int x = topCoords.first;
+		int y = topCoords.second;
+		addEcho("обрабатывается " + std::to_string(x) + "/" + std::to_string(y));
+		auto &tiles = map[x][y];
+		if (!tiles.empty())
+		{
+			addEcho("количество вариантов для выбора:" + std::to_string(tiles.size()));
+			int randomIndex = std::rand() % tiles.size();
+			Tile curr(tiles[randomIndex].index, tiles[randomIndex].x, tiles[randomIndex].y);
+			addEcho("выбран  : X=" + std::to_string(curr.x) + "/ Y=" + std::to_string(curr.y));
+			tiles.clear();
+			tiles.push_back(curr);
+		}
+		else
+		{
+			addEcho("ОШИБКА");
+		}
+		for (auto neighbour : neighboursSide)
+		{
+			int newX = x + neighbour.first;
+			int newY = y + neighbour.second;
+			if (isInMap(newX, newY) && processedCell.find(std::make_pair(newX, newY)) == processedCell.end())
+			{
+				addEcho("добавлен в очередь" + std::to_string(newX) + "/" + std::to_string(newY));
+				queue.emplace(std::make_pair(newX, newY));
+				processedCell.emplace(std::make_pair(newX, newY));
+			}
+		}
+		updateNeighboursList(x, y);
+		addEcho("закончен апдейт соседей");
+		queue.pop();
+	}
+	addEcho("генерация закончена");
+	for (int x = 0; x < WIDTH; x++)
+	{
+		for (int y = 0; y < HEIGHT; y++)
+		{
+			addEcho(std::to_string(x) + "/" + std::to_string(y) + ":x=" + std::to_string(map[x][y][0].x) + "/y=" + std::to_string(map[x][y][0].y));
+		}
+	}
+}
+
+int main()
+{
+	srand(1234);
+	//srand(time(0));
+	setlocale(LC_ALL, "Russian");
+	TileMap newMap;
+	std::string way = "mapTexture.png";
+	std::ofstream outFile("example.txt");
+	if (!outFile)
+	{
+		return 1;
+	}
+	newMap.addNewImage(way, 64, 64);
+	newMap.generateMap(5, 5);
+
+	Map_Vector &map = newMap.getMap();
+	outFile << newMap.Echo() << "конец" << std::endl;
+	outFile.flush();
+	outFile << "не работает";
+	outFile << std::to_string(map[0][0][0].x) << std::endl;
+	outFile.close();
+
+	return 0;
+}
